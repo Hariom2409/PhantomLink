@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Modem - Data Transmission via Sound</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1, h2 {
+            color: #2c3e50;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .btn {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+            transition: background-color 0.3s;
+        }
+        .btn:hover {
+            background-color: #2980b9;
+        }
+        .btn:disabled {
+            background-color: #95a5a6;
+            cursor: not-allowed;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            font-family: monospace;
+        }
+        .status {
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        .success { color: #27ae60; }
+        .error { color: #e74c3c; }
+        .info { color: #3498db; }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        #frequencyVisualizer {
+            width: 100%;
+            height: 150px;
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        select {
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Audio Modem - Data Transmission via Sound</h1>
+    <p>This demo shows how to transmit data using audio frequencies. Type a message below and transmit it through your speakers to another device running this same page.</p>
+    
+    <div class="container">
+        <h2>Transmitter</h2>
+        <label for="transmitRate">Transmission Rate:</label>
+        <select id="transmitRate">
+            <option value="slow">Slow (more reliable)</option>
+            <option value="medium" selected>Medium</option>
+            <option value="fast">Fast (less reliable)</option>
+        </select>
+        
+        <label for="messageInput">Message to Send:</label>
+        <textarea id="messageInput" placeholder="Type your message here...">Hello world! This is a test.</textarea>
+        
+        <div class="controls">
+            <button id="transmitBtn" class="btn">Transmit Message</button>
+            <button id="stopTransmitBtn" class="btn" disabled>Stop Transmission</button>
+        </div>
+        <div id="transmitStatus" class="status"></div>
+    </div>
+    
+    <div class="container">
+        <h2>Receiver</h2>
+        <div class="controls">
+            <button id="listenBtn" class="btn">Start Listening</button>
+            <button id="stopListenBtn" class="btn" disabled>Stop Listening</button>
+        </div>
+        
+        <canvas id="frequencyVisualizer"></canvas>
+        
+        <label for="receivedMessages">Received Messages:</label>
+        <textarea id="receivedMessages" readonly placeholder="Received messages will appear here..."></textarea>
+        <div id="receiveStatus" class="status"></div>
+    </div>
+    
+    <script>
+        // Audio context and nodes
+        let audioContext = null;
+        let analyser = null;
+        let transmitOscillator = null;
+        let microphone = null;
+        
+        // Constants for FSK modulation
+        const SAMPLE_RATE = 44100;
+        const BASE_FREQ = 2000;  // Base frequency in Hz
+        const FREQ_SHIFT = 200;  // Frequency shift for 1 bit in Hz
+        
+        // Transmission rate options (bit duration in milliseconds)
+        const RATES = {
+            slow: 200,
+            medium: 100,
+            fast: 50
+        };
+        
+        // UI elements
+        const transmitBtn = document.getElementById('transmitBtn');
+        const stopTransmitBtn = document.getElementById('stopTransmitBtn');
+        const listenBtn = document.getElementById('listenBtn');
+        const stopListenBtn = document.getElementById('stopListenBtn');
+        const messageInput = document.getElementById('messageInput');
+        const receivedMessages = document.getElementById('receivedMessages');
+        const transmitStatus = document.getElementById('transmitStatus');
+        const receiveStatus = document.getElementById('receiveStatus');
+        const transmitRateSelect = document.getElementById('transmitRate');
+        const frequencyVisualizer = document.getElementById('frequencyVisualizer');
+        const visualizerContext = frequencyVisualizer.getContext('2d');
+        
+        // Initialize the frequency visualizer canvas
+        frequencyVisualizer.width = frequencyVisualizer.offsetWidth;
+        frequencyVisualizer.height = frequencyVisualizer.offsetHeight;
+        
+        // Convert text to binary
+        function textToBinary(text) {
+            let binary = '';
+            for (let i = 0; i < text.length; i++) {
+                const charCode = text.charCodeAt(i);
+                const binaryChar = charCode.toString(2).padStart(8, '0');
+                binary += binaryChar;
+            }
+            return binary;
+        }
+        
+        // Convert binary to text
+        function binaryToText(binary) {
+            let text = '';
+            for (let i = 0; i < binary.length; i += 8) {
+                const byte = binary.substr(i, 8);
+                if (byte.length === 8) {
+                    const charCode = parseInt(byte, 2);
+                    text += String.fromCharCode(charCode);
+                }
+            }
+            return text;
+        }
+        
+        // Transmit data via audio
+        async function transmitData(data) {
+            if (!audioContext) {
+                initializeAudioContext();
+            }
+            
+            // Add start and end markers
+            const startMarker = '10101010';  // 8-bit marker
+            const endMarker = '01010101';    // 8-bit marker
+            const binaryData = startMarker + textToBinary(data) + endMarker;
+            
+            transmitStatus.textContent = 'Transmitting...';
+            transmitStatus.className = 'status info';
+            
+            // Create oscillator for transmitting
+            transmitOscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            gainNode.gain.value = 0.5;  // Set volume to 50%
+            
+            transmitOscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            transmitOscillator.type = 'sine';
+            transmitOscillator.frequency.value = BASE_FREQ;
+            transmitOscillator.start();
+            
+            // Get selected transmission rate
+            const bitDuration = RATES[transmitRateSelect.value];
+            
+            // FSK modulation - transmit each bit
+            for (let i = 0; i < binaryData.length; i++) {
+                const bit = parseInt(binaryData[i]);
+                // Use FSK: 0 = BASE_FREQ, 1 = BASE_FREQ + FREQ_SHIFT
+                transmitOscillator.frequency.setValueAtTime(
+                    bit ? BASE_FREQ + FREQ_SHIFT : BASE_FREQ,
+                    audioContext.currentTime
+                );
+                
+                await new Promise(resolve => setTimeout(resolve, bitDuration));
+                
+                // Check if transmission was stopped
+                if (!transmitOscillator) {
+                    break;
+                }
+            }
+            
+            // Stop transmission if not already stopped
+            if (transmitOscillator) {
+                transmitOscillator.stop();
+                transmitOscillator = null;
+                
+                transmitStatus.textContent = 'Transmission complete!';
+                transmitStatus.className = 'status success';
+                
+                transmitBtn.disabled = false;
+                stopTransmitBtn.disabled = true;
+            }
+        }
+        
+        // Initialize audio context
+        function initializeAudioContext() {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 2048;
+        }
+        
+        // Start listening for data
+        async function startListening() {
+            if (!audioContext) {
+                initializeAudioContext();
+            }
+            
+            receiveStatus.textContent = 'Listening for transmissions...';
+            receiveStatus.className = 'status info';
+            
+            try {
+                microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const source = audioContext.createMediaStreamSource(microphone);
+                source.connect(analyser);
+                
+                // Start visualization
+                requestAnimationFrame(visualizeFrequency);
+                
+                // Start decoder
+                decodeAudio();
+                
+                listenBtn.disabled = true;
+                stopListenBtn.disabled = false;
+            } catch (err) {
+                receiveStatus.textContent = 'Error accessing microphone: ' + err.message;
+                receiveStatus.className = 'status error';
+            }
+        }
+        
+        // Stop listening
+        function stopListening() {
+            if (microphone) {
+                microphone.getTracks().forEach(track => track.stop());
+                microphone = null;
+            }
+            
+            listenBtn.disabled = false;
+            stopListenBtn.disabled = true;
+            
+            receiveStatus.textContent = 'Listening stopped.';
+            receiveStatus.className = 'status';
+        }
+        
+        // Visualize frequency spectrum
+        function visualizeFrequency() {
+            if (!analyser || !microphone) return;
+            
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            analyser.getByteFrequencyData(dataArray);
+            
+            visualizerContext.fillStyle = 'rgb(25, 25, 25)';
+            visualizerContext.fillRect(0, 0, frequencyVisualizer.width, frequencyVisualizer.height);
+            
+            const barWidth = (frequencyVisualizer.width / bufferLength) * 2.5;
+            let x = 0;
+            
+            for (let i = 0; i < bufferLength; i++) {
+                const barHeight = dataArray[i] / 255 * frequencyVisualizer.height;
+                
+                // Calculate color based on frequency
+                const hue = i / bufferLength * 360;
+                visualizerContext.fillStyle = `hsl(${hue}, 90%, 60%)`;
+                
+                visualizerContext.fillRect(x, frequencyVisualizer.height - barHeight, barWidth, barHeight);
+                x += barWidth + 1;
+            }
+            
+            if (microphone) {
+                requestAnimationFrame(visualizeFrequency);
+            }
+        }
+        
+        // Simple FSK decoder
+        async function decodeAudio() {
+            if (!analyser || !microphone) return;
+            
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            
+            // Variables for decoding
+            let receivingData = false;
+            let binaryData = '';
+            let lastBit = -1;
+            let lastBitTime = 0;
+            let startMarkerDetected = false;
+            
+            // Calculate frequency bins for our FSK frequencies
+            const freqToIndex = (freq) => Math.round(freq / SAMPLE_RATE * analyser.fftSize);
+            const baseFreqIndex = freqToIndex(BASE_FREQ);
+            const shiftFreqIndex = freqToIndex(BASE_FREQ + FREQ_SHIFT);
+            
+            while (microphone) {
+                analyser.getByteFrequencyData(dataArray);
+                
+                // Check energy at our two frequencies
+                const baseEnergy = dataArray[baseFreqIndex];
+                const shiftEnergy = dataArray[shiftFreqIndex];
+                
+                // Simple threshold for detecting signal
+                const signalThreshold = 50;
+                
+                if (baseEnergy > signalThreshold || shiftEnergy > signalThreshold) {
+                    const currentBit = shiftEnergy > baseEnergy ? 1 : 0;
+                    const now = Date.now();
+                    
+                    // Only process if bit is different or sufficient time has passed
+                    if (currentBit !== lastBit || now - lastBitTime > 50) {
+                        binaryData += currentBit;
+                        lastBit = currentBit;
+                        lastBitTime = now;
+                        
+                        // Check for start marker
+                        if (!startMarkerDetected && binaryData.endsWith('10101010')) {
+                            startMarkerDetected = true;
+                            binaryData = '';  // Clear the start marker
+                            receiveStatus.textContent = 'Signal detected! Receiving data...';
+                        }
+                        
+                        // Check for end marker
+                        if (startMarkerDetected && binaryData.endsWith('01010101')) {
+                            // Remove end marker
+                            const message = binaryData.slice(0, -8);
+                            if (message.length >= 8) {
+                                const decodedText = binaryToText(message);
+                                receivedMessages.value += decodedText + '\n';
+                                receiveStatus.textContent = 'Message received successfully!';
+                                receiveStatus.className = 'status success';
+                            }
+                            
+                            // Reset for next message
+                            binaryData = '';
+                            startMarkerDetected = false;
+                        }
+                    }
+                }
+                
+                // Wait before checking again
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+        }
+        
+        // Event listeners
+        transmitBtn.addEventListener('click', () => {
+            const message = messageInput.value.trim();
+            if (message) {
+                transmitBtn.disabled = true;
+                stopTransmitBtn.disabled = false;
+                transmitData(message);
+            } else {
+                transmitStatus.textContent = 'Please enter a message to transmit.';
+                transmitStatus.className = 'status error';
+            }
+        });
+        
+        stopTransmitBtn.addEventListener('click', () => {
+            if (transmitOscillator) {
+                transmitOscillator.stop();
+                transmitOscillator = null;
+            }
+            
+            transmitBtn.disabled = false;
+            stopTransmitBtn.disabled = true;
+            
+            transmitStatus.textContent = 'Transmission stopped.';
+            transmitStatus.className = 'status';
+        });
+        
+        listenBtn.addEventListener('click', startListening);
+        stopListenBtn.addEventListener('click', stopListening);
+        
+        // Resize handler for the visualizer
+        window.addEventListener('resize', () => {
+            frequencyVisualizer.width = frequencyVisualizer.offsetWidth;
+        });
+    </script>
+</body>
+</html>
